@@ -8,35 +8,45 @@ from homeassistant.components.climate.const import (
     HVAC_MODE_AUTO,
     HVAC_MODE_COOL,
     HVAC_MODE_HEAT,
-    HVAC_MODE_OFF,
+    HVAC_MODE_OFF,    
+    HVAC_MODE_AUTO,
+    HVAC_MODE_DRY,
+    HVAC_MODE_FAN_ONLY,
     SUPPORT_FAN_MODE,
+    SUPPORT_SWING_MODE,
     SUPPORT_TARGET_TEMPERATURE,
     SUPPORT_TARGET_TEMPERATURE_RANGE,
 )
 from homeassistant.const import ATTR_TEMPERATURE, TEMP_CELSIUS, TEMP_FAHRENHEIT
 
 DICT_HA_TO_MYS = {
-    HVAC_MODE_AUTO: "AutoChangeOver",
-    HVAC_MODE_COOL: "CoolOn",
-    HVAC_MODE_HEAT: "HeatOn",
-    HVAC_MODE_OFF: "Off",
+    HVAC_MODE_OFF: 'OFF',
+    HVAC_MODE_HEAT: 'HEAT',
+    HVAC_MODE_COOL: 'COOL',
+    HVAC_MODE_AUTO: 'AUTO',
+    HVAC_MODE_DRY: 'DRY',
+    HVAC_MODE_FAN_ONLY: 'FAN'
 }
 DICT_MYS_TO_HA = {
-    "AutoChangeOver": HVAC_MODE_AUTO,
-    "CoolOn": HVAC_MODE_COOL,
-    "HeatOn": HVAC_MODE_HEAT,
-    "Off": HVAC_MODE_OFF,
+    'OFF': HVAC_MODE_OFF,
+    'Off': HVAC_MODE_OFF,
+    'HEAT': HVAC_MODE_HEAT,
+    'HeatOn': HVAC_MODE_HEAT,
+    'COOL': HVAC_MODE_COOL,
+    'AUTO': HVAC_MODE_AUTO,
+    'DRY': HVAC_MODE_DRY,
+    'FAN': HVAC_MODE_FAN_ONLY
 }
 
-FAN_LIST = ["Auto", "Min", "Normal", "Max"]
-OPERATION_LIST = [HVAC_MODE_OFF, HVAC_MODE_AUTO, HVAC_MODE_COOL, HVAC_MODE_HEAT]
+FAN_LIST = ["AUTO", "QUIET", "1", "2", "3", "4"]
+OPERATION_LIST = [HVAC_MODE_OFF, HVAC_MODE_COOL, HVAC_MODE_HEAT, HVAC_MODE_AUTO, HVAC_MODE_FAN_ONLY]
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the mysensors climate."""
     mysensors.setup_mysensors_platform(
         hass,
-        DOMAIN,
+        "climate",
         discovery_info,
         MySensorsHVAC,
         async_add_entities=async_add_entities,
@@ -51,7 +61,7 @@ class MySensorsHVAC(mysensors.device.MySensorsEntity, ClimateEntity):
         """Return the list of supported features."""
         features = 0
         set_req = self.gateway.const.SetReq
-        if set_req.V_HVAC_SPEED in self._values:
+        if set_req.V_VAR2 in self._values:
             features = features | SUPPORT_FAN_MODE
         if (
             set_req.V_HVAC_SETPOINT_COOL in self._values
@@ -60,7 +70,7 @@ class MySensorsHVAC(mysensors.device.MySensorsEntity, ClimateEntity):
             features = features | SUPPORT_TARGET_TEMPERATURE_RANGE
         else:
             features = features | SUPPORT_TARGET_TEMPERATURE
-        return features
+        return features | SUPPORT_SWING_MODE
 
     @property
     def assumed_state(self):
@@ -115,7 +125,9 @@ class MySensorsHVAC(mysensors.device.MySensorsEntity, ClimateEntity):
     @property
     def hvac_mode(self):
         """Return current operation ie. heat, cool, idle."""
-        return self._values.get(self.value_type)
+        if self._values.get(self.gateway.const.SetReq.V_STATUS) == "on":
+            return DICT_MYS_TO_HA[self._values.get(self.gateway.const.SetReq.V_VAR1)]
+        return "off"
 
     @property
     def hvac_modes(self):
@@ -125,12 +137,22 @@ class MySensorsHVAC(mysensors.device.MySensorsEntity, ClimateEntity):
     @property
     def fan_mode(self):
         """Return the fan setting."""
-        return self._values.get(self.gateway.const.SetReq.V_HVAC_SPEED)
+        return self._values.get(self.gateway.const.SetReq.V_VAR2)
 
     @property
     def fan_modes(self):
         """List of available fan modes."""
         return FAN_LIST
+
+    @property
+    def swing_mode(self):
+        """Return the swing setting."""
+        return self._values.get(self.gateway.const.SetReq.V_VAR3)
+
+    @property
+    def swing_modes(self):
+        """List of available swing modes."""
+        return ["AUTO", "SWING", "1", "2", "3", "4", "5"]
 
     async def async_set_temperature(self, **kwargs):
         """Set new target temperature."""
@@ -157,7 +179,7 @@ class MySensorsHVAC(mysensors.device.MySensorsEntity, ClimateEntity):
             ]
         for value_type, value in updates:
             self.gateway.set_child_value(
-                self.node_id, self.child_id, value_type, value, ack=1
+                self.node_id, self.child_id, value_type, value, ack=0
             )
             if self.gateway.optimistic:
                 # Optimistically assume that device has changed state
@@ -168,25 +190,37 @@ class MySensorsHVAC(mysensors.device.MySensorsEntity, ClimateEntity):
         """Set new target temperature."""
         set_req = self.gateway.const.SetReq
         self.gateway.set_child_value(
-            self.node_id, self.child_id, set_req.V_HVAC_SPEED, fan_mode, ack=1
+            self.node_id, self.child_id, set_req.V_VAR2, fan_mode, ack=0
         )
         if self.gateway.optimistic:
             # Optimistically assume that device has changed state
-            self._values[set_req.V_HVAC_SPEED] = fan_mode
+            self._values[set_req.V_VAR2] = fan_mode
             self.async_write_ha_state()
+
+    async def async_set_swing_mode(self, swing_mode):
+        """Set new swing mode."""
+        set_req = self.gateway.const.SetReq
+        self.gateway.set_child_value(self.node_id, self.child_id,
+                                     set_req.V_VAR3, swing_mode, ack=0)
+        if self.gateway.optimistic:
+            # optimistically assume that switch has changed state
+            self._values[set_req.V_VAR3] = swing_mode
+            self.async_schedule_update_ha_state()
 
     async def async_set_hvac_mode(self, hvac_mode):
         """Set new target temperature."""
+        set_req = self.gateway.const.SetReq
         self.gateway.set_child_value(
             self.node_id,
             self.child_id,
-            self.value_type,
+            set_req.V_VAR1,
             DICT_HA_TO_MYS[hvac_mode],
-            ack=1,
+            ack=0,
         )
         if self.gateway.optimistic:
             # Optimistically assume that device has changed state
-            self._values[self.value_type] = hvac_mode
+            self._values[set_req.V_STATUS] = "on" if hvac_mode != "off" else "off"
+            self._values[set_req.V_VAR1] = DICT_HA_TO_MYS[hvac_mode]
             self.async_write_ha_state()
 
     async def async_update(self):
